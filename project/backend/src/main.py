@@ -1,17 +1,37 @@
-"""FastAPI backend — demo solver for frontend integration testing."""
+"""FastAPI backend — agente de búsqueda (UCS) para Emergency Control."""
 
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from demo_plan import build_demo_plan
+import solver
 
-app = FastAPI(title="Emergency Control API", version="1.0.0")
+SCENARIO_PATH = Path(__file__).resolve().parents[2] / "scenarios" / "scenario.json"
+
+
+def _load_default_scenario() -> dict[str, Any]:
+    with SCENARIO_PATH.open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Precalienta el escenario por defecto en segundo plano: cuando el profesor
+    # pulse EXECUTE PLAN la respuesta ya está en caché.
+    try:
+        solver.warm_up(_load_default_scenario())
+    except Exception:  # pragma: no cover
+        pass
+    yield
+
+
+app = FastAPI(title="Emergency Control API", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,13 +40,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-SCENARIO_PATH = Path(__file__).resolve().parents[2] / "scenarios" / "scenario.json"
-
-
-def _load_default_scenario() -> dict[str, Any]:
-    with SCENARIO_PATH.open(encoding="utf-8") as f:
-        return json.load(f)
 
 
 @app.get("/api/health")
@@ -41,10 +54,10 @@ def get_scenario() -> dict[str, Any]:
 
 @app.post("/api/solve")
 def solve(scenario: dict[str, Any]) -> dict[str, Any]:
-    """Return a demo plan consistent with the provided scenario.
+    """Resuelve la misión con Uniform-Cost Search.
 
-    Students replace this with a real UCS/search agent. The response contract
-    must remain: solution_found, total_cost, steps[{op, cost, ...}].
+    Devuelve el plan de MENOR COSTO traducido al contrato de CONTRATO.md, o
+    solution_found=false si la misión no tiene solución.
     """
     data = scenario if scenario else _load_default_scenario()
-    return build_demo_plan(data)
+    return solver.solve(data)

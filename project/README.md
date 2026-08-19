@@ -1,78 +1,152 @@
-# Proyecto — Emergency Control
+# Emergency Control — Agente de planificación (UCS)
 
-El diseño interno de la IA lo escribe usted en [`design.md`](design.md) **antes**
-de implementar. Ese archivo ya trae las subsecciones que debe completar
-(estado, acciones, `DROP`, batería, tamaño del espacio). El enunciado está en
-el `README.MD` de la raíz; las reglas del mundo, en [`../CONTRATO.md`](../CONTRATO.md).
+Primer Parcial · Fundamentos de Inteligencia Artificial · Universidad de La Sabana · 2026-2
 
-## Estructura
+El backend expone `POST /api/solve`, que recibe un escenario y devuelve el **plan de menor costo**
+para dejar todas las estaciones de la misión en línea, traducido al contrato de `CONTRATO.md`.
 
-```text
-project/
-├── frontend/          # React + R3F — simulación 3D voxel
-├── backend/           # FastAPI — POST /api/solve (plan demo)
-├── scenarios/         # scenario.json — fuente de verdad
-├── design.md
-└── README.md
-```
+El diseño del agente (estado, acciones, transición, meta, costo, estrategia y podas) está en
+[`design.md`](design.md). Este README solo explica cómo ejecutarlo.
 
-## Cómo levantar (tú)
+---
 
-Abre **dos terminales**.
+## 1. Instalación
 
-### Terminal 1 — Backend
+Requiere Python 3.11+ y Node 18+.
+
+### Backend
 
 ```bash
 cd project/backend
 python -m venv .venv
-.\.venv\Scripts\activate
+# Windows:
+.venv\Scripts\activate
+# macOS / Linux:
+# source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn main:app --app-dir src --port 8000
 ```
 
-Comprobar: http://127.0.0.1:8000/api/health
-
-### Terminal 2 — Frontend
+### Frontend
 
 ```bash
 cd project/frontend
 npm install
-npm run dev
 ```
 
-Abrir: http://localhost:5173
+---
 
-Pulsa **EXECUTE PLAN**. El frontend llama a `/api/solve` (proxy Vite → puerto 8000) y reproduce el plan casilla a casilla.
+## 2. Ejecución
 
-Hasta que conecte su agente, `/api/solve` devuelve el plan artesanal de `demo_plan.py` (sin búsqueda). Ese plan existe para probar el frontend: es legal, no es necesariamente el de menor costo, y usa `DROP` porque la capacidad es 3. No tome esos `DROP` como «hay que soltar en cualquier zona»: son un ejemplo de *presión de carga*.
+Dos terminales.
 
-### Tests del plan demo
+**Terminal 1 — backend**
 
 ```bash
 cd project/backend
-.\.venv\Scripts\activate
-python tests/test_demo_plan.py
+uvicorn main:app --app-dir src --port 8000
 ```
 
-## Contrato visual vs agente (importante)
+Comprobar: <http://127.0.0.1:8000/api/health> → `{"status":"ok"}`
 
-La versión oficial y completa de este contrato (esquema JSON, acciones de `INTERACT`, reglas del mundo y costos) está en `../CONTRATO.md`, que forma parte del enunciado.
+**Terminal 2 — frontend**
 
-El enunciado fija **4 operaciones visuales** que el frontend entiende:
-
-```text
-MOVE | PICKUP | DROP | INTERACT
+```bash
+cd project/frontend
+npm run dev
 ```
 
-`REPAIR`, `ACTIVATE`, `OPEN_DOOR`, `RECHARGE` **no son ops del plan de alto nivel**: son el campo `action` dentro de un paso `INTERACT`.
+Abrir <http://localhost:5173> y pulsar **EXECUTE PLAN**.
 
-Ejemplo de lo que debe devolver `/api/solve`:
+> **Nota sobre el primer arranque.** Al iniciar, el backend precalcula en segundo plano el plan del
+> escenario por defecto (~30 s en un portátil normal). Si pulsas EXECUTE PLAN de inmediato, la
+> primera respuesta puede tardar ese tiempo; a partir de ahí es instantánea. El motivo está
+> explicado en `design.md` §Estrategia de búsqueda: UCS debe expandir todos los nodos con
+> `g < C*` para garantizar el óptimo, y se prefirió un agente exacto y memoizado antes que uno
+> rápido que perdiera la optimalidad.
+
+---
+
+## 3. Probar una misión
+
+**Desde la interfaz.** Pulsar EXECUTE PLAN. El robot recorre el plan casilla a casilla; el log de la
+derecha muestra cada paso con su costo y la batería restante.
+
+**Desde la consola**, con el backend levantado:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/solve \
+     -H "Content-Type: application/json" \
+     -d @../scenarios/scenario.json
+```
+
+**Con otro escenario.** `POST /api/solve` acepta cualquier escenario con las mismas reglas: basta
+enviar otro JSON en el cuerpo. El agente no tiene ids, costos ni cantidades codificados; todo se lee
+del escenario recibido.
+
+---
+
+## 4. Interpretar el resultado
 
 ```json
-{ "op": "INTERACT", "target": "PANEL_A", "action": "REPAIR", "consumes": "FUSE", "cost": 2 }
+{
+  "solution_found": true,
+  "total_cost": 88,
+  "steps": [ { "op": "MOVE", "from": "Z1", "to": "Z2", "cost": 4 } ],
+  "message": "UCS — plan óptimo de costo 88 en 33 pasos. Expandidos 553840 nodos..."
+}
 ```
 
-- **Agente (estudiante):** puede modelar acciones internas (`REPAIR_PANEL_A`, etc.) y luego **traducirlas** a `MOVE`/`PICKUP`/`DROP`/`INTERACT`.
-- **Frontend / banco de pruebas:** solo ejecuta esas 4 ops. El log muestra `INTERACT REPAIR ...` para dejar claro el `op` + el `action`.
+- `solution_found` — `false` con `steps: []` es el caso **FAILURE**: la misión no tiene solución
+  bajo ese escenario. El agente termina; no se queda explorando.
+- `total_cost` — suma de los costos oficiales del escenario. Es el valor que el agente **minimiza**;
+  no es el número de pasos.
+- `steps` — solo las cuatro operaciones del contrato. Las acciones internas del agente
+  (`OPEN_DOOR`, `REPAIR`, `ACTIVATE`, `RECHARGE`) viajan dentro de `INTERACT` en el campo `action`.
+- `message` — traza de la búsqueda: costo, longitud, nodos expandidos y generados, tiempo.
 
-Así no hay contradicción: la capa visual no define la IA; solo anima el plan ya traducido.
+En la interfaz: el HUD muestra zona, batería, carga, progreso de la misión y costo acumulado. Si el
+simulador rechazara un paso, el log lo indicaría con el motivo exacto y detendría la ejecución.
+
+Sobre el escenario demo el agente encuentra **costo 88 en 33 pasos**, frente a los **99** del plan
+artesanal de referencia (`demo_plan.py`).
+
+---
+
+## 5. Pruebas
+
+```bash
+cd project/backend
+python tests/test_agent.py     # los 5 casos del Entregable 3 + regresión (~2 min)
+python tests/test_demo_plan.py # comprobación del plan de referencia
+```
+
+`test_agent.py` cubre: estados equivalentes, información relevante, menos acciones ≠ menor costo
+(BFS vs UCS), FAILURE sin colgarse, rutas alternativas, legalidad del plan contra el simulador y
+correspondencia de cada `cost` con los costos oficiales del escenario.
+
+---
+
+## 6. Estructura
+
+```text
+project/
+├── backend/
+│   ├── src/
+│   │   ├── agent/
+│   │   │   ├── state.py       # estado canónico, hashable
+│   │   │   ├── problem.py     # los 5 componentes AIMA + Applicable con podas
+│   │   │   ├── search.py      # UCS con dominancia de batería (y BFS de contraste)
+│   │   │   └── translate.py   # acción interna -> contrato visual
+│   │   ├── solver.py          # orquestación, memoización y auditoría del plan
+│   │   ├── simulator.py       # simulador de referencia (auditoría)
+│   │   ├── demo_plan.py       # plan artesanal de referencia
+│   │   └── main.py            # FastAPI: /api/solve
+│   └── tests/
+├── frontend/                  # React + R3F (sin cambios)
+├── scenarios/scenario.json    # fuente de verdad
+├── design.md                  # diseño del agente
+└── README.md
+```
+
+El modelo interno de IA y la representación visual están separados: `agent/` no conoce el formato
+del frontend, y `translate.py` es la única capa que lo traduce.
